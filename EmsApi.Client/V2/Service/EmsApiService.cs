@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.Linq;
 using System.Net.Http;
+using System.Threading.Tasks;
 using Refit;
 using Newtonsoft.Json.Linq;
 
@@ -222,6 +223,16 @@ namespace EmsApi.Client.V2
         public bool Authenticate()
         {
             return m_clientHandler.Authenticate();
+        }
+
+        /// <summary>
+        /// Manually initiate authentication. Returns true if authentication succeeded,
+        /// or false otherwise. Normally authentication is performed on the first API
+        /// request or on the next request whenever the current token times out.
+        /// </summary>
+        public Task<bool> AuthenticateAsync()
+        {
+            return m_clientHandler.AuthenticateAsync();
         }
 
         /// <summary>

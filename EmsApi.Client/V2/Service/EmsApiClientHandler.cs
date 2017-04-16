@@ -81,31 +81,56 @@ namespace EmsApi.Client.V2
         /// </summary>
         public bool Authenticate( CancellationToken? cancel = null )
         {
-            string error;
-            if( GetNewBearerToken( out error ) )
+            try
             {
-                Authenticated = true;
-                return true;
+                return AuthenticateAsync( cancel ).Result;
             }
+            catch( AggregateException ex )
+            {
+                // Rethrow aggregate exceptions.
+                foreach( Exception inner in ex.InnerExceptions )
+                    throw inner;
 
-            // Notify listerners of authentication failure.
-            Authenticated = false;
-            OnAuthenticationFailed( new AuthenticationFailedEventArgs( error ) );
-            return false;
+                return false;
+            }
         }
 
-        protected override Task<HttpResponseMessage> SendAsync( HttpRequestMessage request, CancellationToken cancellationToken )
+        /// <summary>
+        /// Requests a new authentication token immediately.
+        /// </summary>
+        public async Task<bool> AuthenticateAsync( CancellationToken? cancel = null )
         {
-            // Todo: How do we account for race conditions when retrieving a token?
+            if( IsTokenValid() )
+                return true;
 
-            // Even if we fail to authenticate, we need to send the request or other code might
-            // be stuck awaiting the send.
-            if( !IsTokenValid() && !Authenticate( cancellationToken ) )
-                return base.SendAsync( request, cancellationToken );
+            // Use a semaphore so only a single task can authenticate at a time.
+            var semaphore = new SemaphoreSlim( 1 );
+            if( cancel != null )
+                await semaphore.WaitAsync( cancel.Value );
+            else
+                await semaphore.WaitAsync();
 
-            // Apply our auth token to the header.
-            request.Headers.Authorization = new AuthenticationHeaderValue( SecurityConstants.Scheme, m_authToken );
-            return base.SendAsync( request, cancellationToken );
+            try
+            {
+                // We could have been beaten to the auth request.
+                if( Authenticated )
+                    return true;
+
+                GetTokenResult result = await GetNewBearerToken( cancel );
+                if( result.Success )
+                {
+                    Authenticated = true;
+                    return true;
+                }
+
+                // Notify listerners of authentication failure.
+                OnAuthenticationFailed( new AuthenticationFailedEventArgs( result.Error ) );
+                return false;
+            }
+            finally
+            {
+                semaphore.Release();
+            }
         }
 
         private void InvalidateAuthentication()
@@ -120,10 +145,24 @@ namespace EmsApi.Client.V2
             return DateTime.UtcNow < m_tokenExpiration;
         }
 
-        private bool GetNewBearerToken( out string error, CancellationToken? cancel = null )
+        protected override async Task<HttpResponseMessage> SendAsync( HttpRequestMessage request, CancellationToken cancellationToken )
         {
-            error = null;
+            if( !IsTokenValid() )
+            {
+                // Even if we fail to authenticate, we need to send the request or 
+                // other code might be stuck awaiting the send.
+                if( !await AuthenticateAsync( cancellationToken ) )
+                    return await base.SendAsync( request, cancellationToken );
+            }
 
+            // Apply our auth token to the header.
+            request.Headers.Authorization = new AuthenticationHeaderValue( SecurityConstants.Scheme, m_authToken );
+            return await base.SendAsync( request, cancellationToken );
+        }
+
+        private async Task<GetTokenResult> GetNewBearerToken( CancellationToken? cancel = null )
+        {
+            Authenticated = false;
             HttpRequestMessage request = new HttpRequestMessage( HttpMethod.Post, string.Format( "{0}/token", m_serviceConfig.Endpoint ) );
             m_serviceConfig.AddDefaultRequestHeaders( request.Headers );
 
@@ -138,14 +177,13 @@ namespace EmsApi.Client.V2
             HttpResponseMessage response = base.SendAsync( request, cancelToken ).Result;
 
             // Regardless of if we succeed or fail the call, the returned structure will be a chunk of JSON.
-            string rawResult = response.Content.ReadAsStringAsync().Result;
+            string rawResult = await response.Content.ReadAsStringAsync();
             JObject result = JObject.Parse( rawResult );
 
             if( !response.IsSuccessStatusCode )
             {
                 string description = result.GetValue( "error_description" ).ToString();
-                error = string.Format( "Unable to retrieve EMS API bearer token: {0}", description );
-                return false;
+                return GetTokenResult.Fail( string.Format( "Unable to retrieve EMS API bearer token: {0}", description ) );
             }
 
             string token = result.GetValue( "access_token" ).ToString();
@@ -154,7 +192,7 @@ namespace EmsApi.Client.V2
             // Stash the new token and keep track of when we expire.
             m_authToken = token;
             m_tokenExpiration = DateTime.UtcNow.AddSeconds( expiresIn );
-            return true;
+            return GetTokenResult.Succeed();
         }
 
         private void OnAuthenticationFailed( AuthenticationFailedEventArgs e )
@@ -167,12 +205,34 @@ namespace EmsApi.Client.V2
         {
             base.Dispose( disposing );
         }
-    }
 
-    internal class SecurityConstants
-    {
-        public const string GrantTypePassword = "password";
-        public const string GrantTypeTrusted = "trusted";
-        public const string Scheme = "Bearer";
+        private class GetTokenResult
+        {
+            public static GetTokenResult Fail( string message )
+            {
+                var result = new GetTokenResult();
+                result.Success = false;
+                result.Error = message;
+                return result;
+            }
+
+            public static GetTokenResult Succeed()
+            {
+                var result = new GetTokenResult();
+                result.Success = true;
+                return result;
+            }
+
+            public bool Success { get; set; }
+
+            public string Error { get; set; }
+        }
+
+        private class SecurityConstants
+        {
+            public const string GrantTypePassword = "password";
+            public const string GrantTypeTrusted = "trusted";
+            public const string Scheme = "Bearer";
+        }
     }
 }
