@@ -205,6 +205,10 @@ The library supports using environment variables for configuration instead of sp
 | EmsApiEndpoint | The API url to communicate with. This url must include the /api portion, such as "https://localhost/api". |
 | EmsApiUsername | The username to use for authentication with the api. |
 | EmsApiPassword | The base64 encoded password for the user. |
+| EmsApiProxyServer | The url for a proxy server to tunnel connections through. |
+| EmsApiProxyPort | The port for a proxy server to tunnel connections through. |
+| EmsApiProxyUsername | The user name for a proxy server to tunnel connections through. |
+| EmsApiProxyPassword | The password for a proxy server to tunnel connections through. |
 
 
 # Build from source and try out the examples

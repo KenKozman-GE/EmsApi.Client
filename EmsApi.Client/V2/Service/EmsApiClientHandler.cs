@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Threading;
@@ -22,17 +23,18 @@ namespace EmsApi.Client.V2
     {
         public EmsApiClientHandler()
         {
-            AutomaticDecompression = System.Net.DecompressionMethods.GZip;
+            // Depending on the configuration, we might need to decompress gzip responses.
+            AutomaticDecompression = DecompressionMethods.GZip;
 
-            m_endpoint = string.Empty;
-            m_userName = string.Empty;
-            m_pass = string.Empty;
+            // We keep our own version of the service configuration, and copy changes to it 
+            // from the main service class, because we need to perform some updates depending
+            // on if authentication or proxies change.
+            m_serviceConfig = new EmsApiServiceConfiguration();
         }
 
         private string m_authToken;
         private DateTime m_tokenExpiration;
         private EmsApiServiceConfiguration m_serviceConfig;
-        private string m_endpoint, m_userName, m_pass;
 
         /// <summary>
         /// Returns true if the client is currently authenticated.
@@ -47,26 +49,8 @@ namespace EmsApi.Client.V2
         {
             set
             {
-                bool deAuth = false;
-                if( value.Endpoint != m_endpoint )
-                {
-                    m_endpoint = value.Endpoint;
-                    deAuth = true;
-                }
-                if( value.UserName != m_userName )
-                {
-                    m_userName = value.UserName;
-                    deAuth = true;
-                }
-                if( value.Password != m_pass )
-                {
-                    m_pass = value.Password;
-                    deAuth = true;
-                }
-
-                if( deAuth )
-                    InvalidateAuthentication();
-
+                HandleAuthConfigChanges( value );
+                HandleProxyConfigChanges( value );
                 m_serviceConfig = value;
             }
         }
@@ -108,13 +92,6 @@ namespace EmsApi.Client.V2
             return base.SendAsync( request, cancellationToken );
         }
 
-        private void InvalidateAuthentication()
-        {
-            Authenticated = false;
-            m_authToken = string.Empty;
-            m_tokenExpiration = DateTime.MinValue;
-        }
-
         private bool IsTokenValid()
         {
             return DateTime.UtcNow < m_tokenExpiration;
@@ -135,6 +112,8 @@ namespace EmsApi.Client.V2
             } );
 
             CancellationToken cancelToken = cancel.HasValue ? cancel.Value : new CancellationToken();
+
+            // Fixme: If there are any SSL or proxy issues, they will show up here first as an aggregate exception.
             HttpResponseMessage response = base.SendAsync( request, cancelToken ).Result;
 
             // Regardless of if we succeed or fail the call, the returned structure will be a chunk of JSON.
@@ -166,6 +145,80 @@ namespace EmsApi.Client.V2
         protected override void Dispose( bool disposing )
         {
             base.Dispose( disposing );
+        }
+
+        private void HandleAuthConfigChanges( EmsApiServiceConfiguration config )
+        {
+            if( !m_serviceConfig.AuthenticationChanged( config ) )
+                return;
+
+            Authenticated = false;
+            m_authToken = string.Empty;
+            m_tokenExpiration = DateTime.MinValue;
+        }
+
+        private void HandleProxyConfigChanges( EmsApiServiceConfiguration config )
+        {
+            if( !m_serviceConfig.ProxyChanged( config ) )
+                return;
+
+            // The server is unset, don't use a proxy.
+            if( string.IsNullOrEmpty( config.ProxyServer ) )
+            {
+                Proxy = null;
+                UseProxy = false;
+            }
+
+            Proxy = new EmsWebProxy( config );
+            UseProxy = true;
+        }
+
+        /// <summary>
+        /// To avoid having to take another dependency we implement our own IWebProxy,
+        /// there's not much to it.
+        /// </summary>
+        private class EmsWebProxy : IWebProxy
+        {
+            public EmsWebProxy( EmsApiServiceConfiguration config )
+            {
+                m_proxyUri = GenerateUri( config );
+                if( !string.IsNullOrEmpty( m_proxyUri.Scheme ) && m_proxyUri.Scheme == "https" )
+                    throw new EmsApiConfigurationException( "Proxy servers with an https scheme are not supported." );
+
+                Credentials = GenerateCredentials( config );
+            }
+
+            private Uri GenerateUri( EmsApiServiceConfiguration config )
+            {
+                if( config.ProxyServerIncludesPort() )
+                    return new Uri( config.ProxyServer );
+
+                string server = config.ProxyServer.TrimEnd( '/' );
+                string uri = string.Format( "{0}:{1}", server, config.ResolveProxyPort() );
+                return new Uri( uri );
+            }
+
+            private ICredentials GenerateCredentials( EmsApiServiceConfiguration config )
+            {
+                if( string.IsNullOrEmpty( config.ProxyUserName ) )
+                    return null;
+
+                return new NetworkCredential( config.ProxyUserName, config.ProxyPassword );
+            }
+
+            private Uri m_proxyUri;
+
+            public ICredentials Credentials { get; set; }
+
+            public Uri GetProxy( Uri destination )
+            {
+                return m_proxyUri;
+            }
+
+            public bool IsBypassed( Uri host )
+            {
+                return false;
+            }
         }
     }
 

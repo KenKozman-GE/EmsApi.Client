@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Linq;
 using System.Net.Http.Headers;
 
 namespace EmsApi.Client.V2
@@ -51,6 +52,30 @@ namespace EmsApi.Client.V2
         /// environment variable, which should contain a base64 encoded version of the password.
         /// </summary>
         public string Password { get; set; }
+
+        /// <summary>
+        /// The URL for an HTTP or HTTP proxy server to use. In most situations this is not required,
+        /// but if your network doesn't have direct access to the internet then this will need to be
+        /// used. Note that this does not include the port for the proxy server, that's a separate property.
+        /// </summary>
+        public string ProxyServer { get; set; }
+
+        /// <summary>
+        /// The port for the proxy server, if a proxy server is specified. If this is not specified, but
+        /// a proxy server url is, this will default to port 80 for a HTTP address and port 443 for an HTTPS
+        /// address.
+        /// </summary>
+        public int ProxyPort { get; set; }
+
+        /// <summary>
+        /// The username used to log into the proxy server. Leave blank for anonymous authentication.
+        /// </summary>
+        public string ProxyUserName { get; set; }
+
+        /// <summary>
+        /// The password used to log into the proxy server. Leave blank for anonymous authentication.
+        /// </summary>
+        public string ProxyPassword { get; set; }
 
         /// <summary>
         /// The application name to pass along to the EMS API. This is used for logging on the
@@ -106,7 +131,7 @@ namespace EmsApi.Client.V2
         /// <summary>
         /// Adds the default headers into the given header collection.
         /// </summary>
-        public void AddDefaultRequestHeaders( HttpRequestHeaders headerCollection )
+        internal void AddDefaultRequestHeaders( HttpRequestHeaders headerCollection )
         {
             headerCollection.Add( HttpHeaderNames.UserAgent, UserAgent );
 
@@ -125,7 +150,7 @@ namespace EmsApi.Client.V2
         /// <param name="error">
         /// The reason the configuration is invalid.
         /// </param>
-        public bool Validate( out string error )
+        internal bool Validate( out string error )
         {
             error = null;
 
@@ -158,25 +183,107 @@ namespace EmsApi.Client.V2
         }
 
         /// <summary>
+        /// Compares this configuration to the given other configuration, and returns
+        /// true if parameters affecting authentication have changed.
+        /// </summary>
+        internal bool AuthenticationChanged( EmsApiServiceConfiguration other )
+        {
+            return
+                Endpoint != other.Endpoint ||
+                UserName != other.UserName ||
+                Password != other.Password;
+        }
+
+        /// <summary>
+        /// Compares this configuration to the given other configuration, and returns
+        /// true if parameters affecting the proxy have changed.
+        /// </summary>
+        internal bool ProxyChanged( EmsApiServiceConfiguration other )
+        {
+            return
+                ProxyServer != other.ProxyServer ||
+                ProxyPort != other.ProxyPort ||
+                ProxyUserName != other.ProxyUserName ||
+                ProxyPassword != other.ProxyPassword;
+        }
+
+        /// <summary>
+        /// Retruns true if the proxy server url already contains the port.
+        /// </summary>
+        internal bool ProxyServerIncludesPort()
+        {
+            string[] parts = ProxyServer.Split( ':' );
+            if( parts.Length == 0 )
+                return false;
+
+            int junk;
+            if( !int.TryParse( parts.Last(), out junk ) )
+                return false;
+
+            return true;
+        }
+
+        /// <summary>
+        /// Returns the correct proxy port to use, if it isn't already specified in the url.
+        /// </summary>
+        internal int ResolveProxyPort()
+        {
+            // Check the explicit port.
+            if( ProxyPort != 0 )
+                return ProxyPort;
+
+            // Glean it from the uri.
+            Uri endpointUri;
+            if( !Uri.TryCreate( Endpoint, UriKind.Absolute, out endpointUri ) )
+                return 443; // No way to figure it out, default to 443.
+
+            return endpointUri.Scheme == "https" ? 443 : 80;
+        }
+
+        /// <summary>
         /// Loads some well-known environment variables into the current configuration.
         /// </summary>
         private void LoadEnvironmentVariables()
         {
             string endpoint = Environment.GetEnvironmentVariable( "EmsApiEndpoint" );
-            string user = Environment.GetEnvironmentVariable( "EmsApiUsername" );
-            string base64pass = Environment.GetEnvironmentVariable( "EmsApiPassword" );
-
             if( !string.IsNullOrWhiteSpace( endpoint ) )
                 Endpoint = endpoint.Trim();
 
+            string user = Environment.GetEnvironmentVariable( "EmsApiUsername" );
             if( !string.IsNullOrWhiteSpace( user ) )
                 UserName = user.Trim();
 
+            string base64pass = Environment.GetEnvironmentVariable( "EmsApiPassword" );
             if( !string.IsNullOrWhiteSpace( base64pass ) )
             {
                 byte[] passBytes = Convert.FromBase64String( base64pass.Trim() );
                 Password = System.Text.Encoding.UTF8.GetString( passBytes );
             }
+
+            string proxyServer = Environment.GetEnvironmentVariable( "EmsApiProxyServer" );
+            if( !string.IsNullOrWhiteSpace( proxyServer ) )
+                ProxyServer = proxyServer.Trim();
+
+            string proxyPort = Environment.GetEnvironmentVariable( "EmsApiProxyPort" );
+            if( !string.IsNullOrWhiteSpace( proxyPort ) )
+            {
+                int port;
+                if( !int.TryParse( proxyPort, out port ) )
+                {
+                    throw new EmsApiConfigurationException( string.Format( 
+                        "The EmsApiProxyPort environment variable '{0}' cannot be converted to an integer.", proxyPort ) );
+                }
+
+                ProxyPort = port;
+            }
+
+            string proxyUser = Environment.GetEnvironmentVariable( "EmsApiProxyUsername" );
+            if( !string.IsNullOrWhiteSpace( proxyUser ) )
+                ProxyUserName = proxyUser.Trim();
+
+            string proxyPass = Environment.GetEnvironmentVariable( "EmsApiProxyPassword" );
+            if( !string.IsNullOrWhiteSpace( proxyPass ) )
+                ProxyPassword = proxyPass.Trim();
         }
 
         /// <summary>
