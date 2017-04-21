@@ -212,7 +212,7 @@ namespace EmsApi.Client.V2
         /// </summary>
         internal bool ProxyServerIncludesPort()
         {
-            string[] parts = ProxyServer.Split( ':' );
+            string[] parts = ProxyServer.TrimEnd( '/' ).Split( ':' );
             if( parts.Length == 0 )
                 return false;
 
